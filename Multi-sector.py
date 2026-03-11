@@ -7,6 +7,7 @@ from sklearn.cluster import KMeans
 import time
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.metrics import roc_auc_score
+import math
 
 
 def loadData(path):
@@ -63,6 +64,20 @@ def calAngle(a, b, c):
         else:
             return 360 - angle * 180 / np.pi
 
+def min_max_normalize(lst):
+    """对列表进行最大最小归一化"""
+    if not lst:  # 处理空列表
+        return []
+    
+    min_val = min(lst)
+    max_val = max(lst)
+    
+    # 避免除以0
+    if max_val == min_val:
+        return [0.5] * len(lst)  # 所有值相等时，归一化为0.5
+    
+    normalized = [(x - min_val) / (max_val - min_val) for x in lst]
+    return normalized
 
 def extractTrajFearure(route, res, k):
     # route：轨迹
@@ -86,22 +101,33 @@ def extractTrajFearure(route, res, k):
         feature_dist[idx]+= np.sqrt(np.sum((route[i] - MP) ** 2))
         feature_angle[idx]+=(angles-idx*sector_angle_range)
 
+    feature_dist1=[0 for i in range(2*k)]#特征向量,0-180和180-360分别分为k个扇区
+    feature_dist2=[0 for i in range(2*k)]#特征向量,0-180和180-360分别分为k个扇区
+    
     for i in range(len(sector_pt)):
         if sector_pt[i]>=2:
-            feature_dist[i]=feature_dist[i]/sector_pt[i]
             feature_angle[i]=feature_angle[i]/sector_pt[i]
+            feature_dist[i]=feature_dist[i]/sector_pt[i]
+            
         else:
             if sector_pt[i]==0:
                 if i>0 and i<len(sector_pt)-1:
                     if sector_pt[i-1] > 0 and sector_pt[i+1] > 0:
                         feature_dist[i]=(feature_dist[i-1]+feature_dist[i+1]/sector_pt[i+1])/2
                         feature_angle[i]=(feature_angle[i-1]+feature_angle[i+1]/sector_pt[i+1])/2#sector_angle_range/2
-    
-    feature = feature_dist + feature_angle
+
+        feature_dist1[i]=feature_dist[i]*math.cos(math.radians(feature_angle[i]))
+        feature_dist2[i]=feature_dist[i]*math.cos(math.radians(sector_angle_range-feature_angle[i]))
+
+    # feature = feature_dist + feature_angle
+    feature = feature_dist1 + feature_dist2
     return feature
 
 results=[]
-for f in ["T1","T2","T3","T4","T5","T6","T7","T8","T9"]:
+#["T1","T2","T3","T4","T5","T6","T7","T8","T9"]
+#["A1","A2","A3"]
+#["C1","C2","C3"]
+for f in ["T1","T2","T3","T4","T5","T6","T7","T8","T9","A1","A2","C1","C2","C3"]:
     best_auc={'auc':0,'bins':0,'n_neighbors':0}
     path_inner = "dataset/" + f + "/inners.txt"
     path_outlier = "dataset/" + f + "/outliers.txt"
@@ -118,7 +144,7 @@ for f in ["T1","T2","T3","T4","T5","T6","T7","T8","T9"]:
     time_e0 = time.time()
 
     #多参数循环测试
-    for k in range(3,30):  #扇区划分k值
+    for k in range(3,40):  #扇区划分k值
         features = []
         for i in range(len(data)):
             p1_resorted = np.array(eval(data[i]))
@@ -128,7 +154,7 @@ for f in ["T1","T2","T3","T4","T5","T6","T7","T8","T9"]:
 
 
         # LOF detector
-        for n_neighbors in range(3,30):  # for LOF
+        for n_neighbors in range(3,60):  # for LOF
             clf = LocalOutlierFactor(n_neighbors)
             OutlierScore = -clf.fit_predict(features)
         
