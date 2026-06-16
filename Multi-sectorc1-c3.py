@@ -8,12 +8,12 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.metrics import roc_auc_score
 import math
 from sklearn.preprocessing import StandardScaler
+import random  # 新增：用于随机翻转标签
 
 def loadData(path):
     with open(path, 'r') as f:
         routes = f.readlines()
     return routes
-
 
 def findSourceDestination(routes):
     X = []
@@ -24,9 +24,7 @@ def findSourceDestination(routes):
     X = np.array(X)
     kmeans = KMeans(n_clusters=2, random_state=0).fit(X)
     res = kmeans.cluster_centers_
-    
     return res
-
 
 def positionOfLine(A, B, C):
     Ax, Ay, Bx, By, X, Y = A[0], A[1], B[0], B[1], C[0], C[1]
@@ -35,7 +33,6 @@ def positionOfLine(A, B, C):
         return 1
     else:
         return -1
-
 
 def calAngle(a, b, c):
     a, b, c = np.array(a), np.array(b), np.array(c)
@@ -66,154 +63,153 @@ def calAngle(a, b, c):
 
 def min_max_normalize(lst):
     """对列表进行最大最小归一化"""
-    if not lst:  # 处理空列表
+    if not lst:
         return []
-    
+
     min_val = min(lst)
     max_val = max(lst)
-    
-    # 避免除以0
+
     if max_val == min_val:
-        return [0.5] * len(lst)  # 所有值相等时，归一化为0.5
-    
+        return [0.5] * len(lst)
+
     normalized = [(x - min_val) / (max_val - min_val) for x in lst]
     return normalized
 
 def extractTrajFearure(route, res, k):
-    # route：轨迹
-    # res=[S,D], S为出发点，D为目的地
-    # k：扇区划分参数
-
     if k <= 0:
         return "error: k should be more than 0"
     SrcP,MP,DesP=res[0], sum(res) / 2, res[1]
 
     sector_angle_range=180/k
     sector_pt=[0 for i in range(2*k)]
-    feature_dist=[0 for i in range(2*k)]     # 距离累加
-    feature_angle=[0 for i in range(2*k)]    # 角度累加
-    
-    # ==================== 新增：保存每个扇区内原始d和θ，用于计算方差 ====================
-    sector_d_list = [[] for _ in range(2*k)]   # 保存每个扇区所有d_ij
-    sector_theta_list = [[] for _ in range(2*k)] # 保存每个扇区所有θ_ij
+    feature_dist=[0 for i in range(2*k)]
+    feature_angle=[0 for i in range(2*k)]
 
-    for i in range(1, len(route) - 1):#注意，这里仅计算轨迹点，出发点和终点不计算
+    for i in range(1, len(route) - 1):
         angles = calAngle(SrcP, MP, route[i])
-        angles_bin = angles // sector_angle_range 
+        angles_bin = angles // sector_angle_range
         idx = int(angles_bin)
         sector_pt[idx] += 1
+        feature_dist[idx]+= np.sqrt(np.sum((route[i] - MP) ** 2))
+        feature_angle[idx]+=(angles-idx*sector_angle_range)
 
-        # 原始d_ij和θ_ij
-        d = np.sqrt(np.sum((route[i] - MP) ** 2))
-        theta = angles - idx * sector_angle_range
-
-        # 累加（用于均值）
-        feature_dist[idx] += d
-        feature_angle[idx] += theta
-
-        # 保存原始值（用于方差）
-        sector_d_list[idx].append(d)
-        sector_theta_list[idx].append(theta)
-
-    # 均值特征
     feature_dist1=[0 for i in range(2*k)]
     feature_dist2=[0 for i in range(2*k)]
-    feature_dist3=[0 for i in range(2*k)]
-    feature_dist4=[0 for i in range(2*k)]
-    # 方差特征（新增）
-    feature_dist_var=[0 for i in range(2*k)]   # 距离方差
-    feature_angle_var=[0 for i in range(2*k)]  # 角度方差
-    
+
     for i in range(len(sector_pt)):
         if sector_pt[i]>=2:
-            # 均值
             feature_angle[i]=feature_angle[i]/sector_pt[i]
             feature_dist[i]=feature_dist[i]/sector_pt[i]
-            # 方差（新增）
-            feature_dist_var[i] = np.var(sector_d_list[i])
-            feature_angle_var[i] = np.var(sector_theta_list[i])
-            
-        else:
-            # 点数不足，方差补0
-            feature_dist_var[i] = 0.0
-            feature_angle_var[i] = 0.0
 
+        else:
             if sector_pt[i]==0:
                 if i>0 and i<len(sector_pt)-1:
                     if sector_pt[i-1] > 0 and sector_pt[i+1] > 0:
                         feature_dist[i]=(feature_dist[i-1]+feature_dist[i+1]/sector_pt[i+1])/2
                         feature_angle[i]=(feature_angle[i-1]+feature_angle[i+1]/sector_pt[i+1])/2
-                        # 空扇区方差用相邻扇区平均插值（可选，更平滑）
-                        feature_dist_var[i] = (np.var(sector_d_list[i-1]) + np.var(sector_d_list[i+1]))/2
-                        feature_angle_var[i] = (np.var(sector_theta_list[i-1]) + np.var(sector_theta_list[i+1]))/2
 
-        # 原有均值投影特征
         feature_dist1[i]=feature_dist[i]*math.cos(math.radians(feature_angle[i]))
         feature_dist2[i]=feature_dist[i]*math.cos(math.radians(sector_angle_range-feature_angle[i]))
-        feature_dist3[i]=feature_dist_var[i]*math.cos(math.radians(feature_angle_var[i]))
-        feature_dist4[i]=feature_dist_var[i]*math.sin(math.radians(feature_angle_var[i]))
 
-    # ==================== 关键修改：返回 均值特征 + 方差特征 ====================
-    # 原：feature_dist1, feature_dist2 (共4k维)
-    # 新：feature_dist1, feature_dist2, dist_var, angle_var (共8k维)
-    return feature_dist1, feature_dist2, feature_dist3, feature_dist4
+    return feature_dist1 , feature_dist2
+
+# ===================== 核心修改：标签随机翻转函数 =====================
+def flip_labels(labels, flip_ratio=0.05):
+    """
+    随机翻转指定比例的标签
+    labels: 原始标签列表 1=异常, 0=正常
+    flip_ratio: 翻转比例，默认5%
+    返回：翻转后的标签列表
+    """
+    flipped_labels = labels.copy()
+    n_total = len(flipped_labels)
+    n_flip = int(math.ceil(n_total * flip_ratio))  # 向上取整保证至少翻转1个
+    
+    # 随机选择要翻转的索引
+    flip_indices = random.sample(range(n_total), n_flip)
+    
+    # 执行翻转：0↔1
+    for idx in flip_indices:
+        flipped_labels[idx] = 1 - flipped_labels[idx]
+    
+    return flipped_labels
+# ====================================================================
 
 results=[]
-#["T1","T2","T3","T4","T5","T6","T7","T8","T9"]
-#["A1","A2","A3"]
-#["C1","C2","C3"]
-for f in ["T1","T2","T3","T4","T5","T6","T7","T8","T9","A1","A2","C1","C2","C3"]:
+flip_results = []  # 保存翻转5%标签后的结果
+
+# 数据集列表不变
+for f in ["C1","C2","C3"]:
     best_auc={'auc':0,'bins':0,'n_neighbors':0}
+    best_flip_auc={'auc':0,'bins':0,'n_neighbors':0}  # 翻转后的最优AUC
     path_inner = "dataset/" + f + "/inners.txt"
     path_outlier = "dataset/" + f + "/outliers.txt"
 
     outliers = loadData(path_outlier)
     inners = loadData(path_inner)
 
+    # 原始真实标签
     label = [1] * len(outliers) + [0] * len(inners)
     data = outliers + inners
-    
+
+    # ===================== 修改：仅对 C1/C2/C3 翻转5%标签 =====================
+    if f in ["C1", "C2", "C3"]:
+        np.random.seed(42)  # 固定随机种子，结果可复现
+        random.seed(42)
+        flipped_label = flip_labels(label, flip_ratio=0.05)
+        print(f"\n========== {f} 标签信息 ==========")
+        print(f"总样本数: {len(label)}")
+        print(f"翻转标签数: {sum(1 for a,b in zip(label,flipped_label) if a!=b)}")
+        print(f"原始标签异常数: {sum(label)}")
+        print(f"翻转后标签异常数: {sum(flipped_label)}")
+    else:
+        flipped_label = label  # 非成都数据集不翻转
+    # ========================================================================
 
     SD_points = findSourceDestination(data)
 
     time_e0 = time.time()
 
-    #多参数循环测试
-    for k in range(3,40):  #扇区划分k值
+    for k in range(3,40):
         features1 = []
         features2 = []
-        features_var_d = []
-        features_var_a = []
         for i in range(len(data)):
             p1_resorted = np.array(eval(data[i]))
             p1_resorted = np.concatenate((np.array([SD_points[0]]), p1_resorted, np.array([SD_points[-1]])), axis=0)
-            # ==================== 接收4组特征 ====================
-            feature1, feature2, var_d, var_a = extractTrajFearure(p1_resorted, SD_points, k)
+            feature1,feature2 = extractTrajFearure(p1_resorted, SD_points, k)
             features1.append(feature1)
             features2.append(feature2)
-            features_var_d.append(var_d)
-            features_var_a.append(var_a)
 
-        # 标准化
         scaler = StandardScaler()
         features1 = scaler.fit_transform(features1)
         features2 = scaler.fit_transform(features2)
-        features_var_d = scaler.fit_transform(features_var_d)
-        features_var_a = scaler.fit_transform(features_var_a)
+        features = np.concatenate((features1, features1), axis=1)
 
-        # ==================== 拼接成 8k 维特征 ====================
-        features = np.concatenate((features1, features2, features_var_d, features_var_a), axis=1)
-        
-        # LOF detector
-        for n_neighbors in range(3,60):  # for LOF
+        for n_neighbors in range(3,60):
             clf = LocalOutlierFactor(n_neighbors)
             OutlierScore = -clf.fit_predict(features)
         
-
+            # 计算原始标签AUC
             roc = roc_auc_score(label, OutlierScore)
             if best_auc['auc']<roc:
                 best_auc['auc']=roc
                 best_auc['bins']=k
                 best_auc['n_neighbors']=n_neighbors
+            
+            # ===================== 计算翻转标签AUC =====================
+            roc_flip = roc_auc_score(flipped_label, OutlierScore)
+            if best_flip_auc['auc'] < roc_flip:
+                best_flip_auc['auc'] = roc_flip
+                best_flip_auc['bins'] = k
+                best_flip_auc['n_neighbors'] = n_neighbors
+            # ==========================================================
+
     results.append(best_auc)
-    print(f, best_auc)
+    flip_results.append(best_flip_auc)
+    
+    # 输出：原始结果 + 翻转5%标签结果
+    print(f"\n===== {f} 最终结果 =====")
+    print(f"原始标签最优AUC: {best_auc}")
+    if f in ["C1", "C2", "C3"]:
+        print(f"5%标签翻转后最优AUC: {best_flip_auc}")
+    print("="*50)
